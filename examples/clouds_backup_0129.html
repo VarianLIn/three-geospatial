@@ -1,0 +1,401 @@
+<!--
+ * @Author: Varian LIn
+ * @Date: 2026-01-29 11:29:03
+ * @LastEditors: Varian LIn
+ * @LastEditTime: 2026-01-29 14:11:48
+ * @Description: 
+-->
+<!doctype html>
+<html lang="zh-cn">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container"></div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.181.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.181.0/examples/jsm/",
+          "postprocessing": "https://unpkg.com/postprocessing@6.37.3/build/index.js",
+          "@takram/three-geospatial": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/index.js",
+          "@takram/three-geospatial/shaders": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/shaders.js",
+          "@takram/three-geospatial-effects": "https://unpkg.com/@takram/three-geospatial-effects@0.4.3/build/index.js",
+          "@takram/three-atmosphere": "https://unpkg.com/@takram/three-atmosphere@0.15.1/build/index.js",
+          "@takram/three-clouds": "https://cdn.jsdelivr.net/npm/@takram/three-clouds@0.6.0/+esm"
+        }
+      }
+    </script>
+    <script type="module">
+      // https://github.com/takram-design-engineering/three-geospatial/issues/60
+      // https://github.com/jeantimex/geospatial/blob/main/src/main/index.ts
+
+      // import '../styles.css' // Import the CSS file
+
+      import {
+        EffectComposer,
+        EffectMaterial,
+        EffectPass,
+        LUT3DEffect,
+        NormalPass,
+        RenderPass,
+        SMAAEffect,
+        ToneMappingEffect,
+        ToneMappingMode
+      } from 'postprocessing'
+      import {
+        Data3DTexture,
+        HalfFloatType,
+        LinearFilter,
+        LinearMipMapLinearFilter,
+        Matrix4,
+        Mesh,
+        NoColorSpace,
+        NoToneMapping,
+        PCFSoftShadowMap,
+        PerspectiveCamera,
+        PlaneGeometry,
+        RedFormat,
+        RepeatWrapping,
+        Scene,
+        Texture,
+        TextureLoader,
+        Vector3,
+        WebGLRenderer
+      } from 'three'
+
+      import {
+        AerialPerspectiveEffect,
+        PrecomputedTexturesLoader,
+        SkyMaterial
+      } from '@takram/three-atmosphere'
+      import {
+        CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+        CLOUD_SHAPE_TEXTURE_SIZE,
+        CloudsEffect
+      } from '@takram/three-clouds'
+      import {
+        // createData3DTextureLoaderClass,
+        DataTextureLoader,
+        Geodetic,
+        parseUint8Array,
+        PointOfView,
+        radians,
+        STBNLoader
+      } from '@takram/three-geospatial'
+      import {
+        createHaldLookupTexture,
+        DitheringEffect,
+        LensFlareEffect
+      } from '@takram/three-geospatial-effects'
+
+      // import { Globe } from '../globe'
+      // import {
+      //   getECIToECEFRotationMatrix,
+      //   getMoonDirectionECI,
+      //   getSunDirectionECI
+      // } from '../utils/celestialDirections'
+
+      // let globe //: Globe;
+      let renderer //: WebGLRenderer;
+      let camera //: PerspectiveCamera;
+      let scene //: Scene;
+      let skyMaterial //: SkyMaterial;
+      let aerialPerspective //: AerialPerspectiveEffect;
+      let composer //: EffectComposer;
+      let lutTexture //: Texture;
+      let lutEffect //: LUT3DEffect;
+      let clouds //: CloudsEffect;
+
+      const sunDirection = new Vector3()
+      const moonDirection = new Vector3()
+      const rotationMatrix = new Matrix4()
+
+      // Tokyo time 9:00AM
+      const referenceDate = new Date('2024-03-01T09:00:00+09:00')
+
+      function init() {
+        // scene
+        scene = new Scene()
+
+        // renderer
+        renderer = new WebGLRenderer({
+          powerPreference: 'high-performance',
+          antialias: true,
+          stencil: false,
+          depth: true,
+          logarithmicDepthBuffer: false
+        })
+        renderer.setPixelRatio(window.devicePixelRatio)
+        renderer.setSize(window.innerWidth, window.innerHeight)
+        renderer.toneMapping = NoToneMapping
+        renderer.toneMappingExposure = 10
+        renderer.shadowMap.enabled = true
+        renderer.shadowMap.type = PCFSoftShadowMap
+
+        const container = document.getElementById('container')
+        if (container) {
+          container.appendChild(renderer.domElement)
+        }
+
+        // camera
+        const aspect = window.innerWidth / window.innerHeight
+        camera = new PerspectiveCamera(75, aspect, 10, 1e6)
+
+        // --- New setup using geospatial coordinates ---
+        const longitude = 139.7671 // degrees (Tokyo)
+        const latitude = 35.6812 // degrees
+        const heading = 180 // degrees
+        const pitch = -10 // degrees
+        const distance = 3000 // meters
+
+        // Calculate the center point on the globe in ECEF coordinates
+        const centerECEF = new Geodetic(
+          radians(longitude),
+          radians(latitude)
+        ).toECEF() // Converts lon/lat to a Vector3 position
+
+        // Calculate camera position and orientation based on the point of view
+        new PointOfView(distance, radians(heading), radians(pitch)).decompose(
+          centerECEF, // The point to look towards (target)
+          camera.position, // Vector3 to store the calculated camera position
+          camera.quaternion // Quaternion to store the calculated camera orientation
+        )
+
+        // Ensure the camera's up vector is set correctly (usually Y-up for camera space)
+        // The .decompose method should handle this via the quaternion,
+        // but explicitly setting it can prevent issues if the camera was previously manipulated.
+        camera.up.set(0, 1, 0)
+
+        // Update projection matrix if aspect ratio changed
+        camera.aspect = aspect
+        camera.updateProjectionMatrix()
+
+        // Create the sky
+        skyMaterial = new SkyMaterial()
+        const sky = new Mesh(new PlaneGeometry(2, 2), skyMaterial)
+        sky.frustumCulled = false
+        scene.add(sky)
+
+        // globe = new Globe(scene, camera, renderer, /* disableControls= */ true)
+        // scene.add(globe.tiles.group)
+
+        // Demonstrates forward lighting here. For deferred lighting, set
+        // sunIrradiance and skyIrradiance to true, remove SkyLightProbe and
+        // SunDirectionalLight, and provide a normal buffer to
+        // AerialPerspectiveEffect.
+        aerialPerspective = new AerialPerspectiveEffect(camera, {
+          correctGeometricError: true,
+          correctAltitude: true,
+          inscatter: true,
+          photometric: true,
+          skyIrradiance: true,
+          sunIrradiance: true,
+          transmittance: true,
+          irradianceScale: 2 / Math.PI,
+          sky: true,
+          sun: true,
+          moon: true
+        })
+
+        clouds = new CloudsEffect(camera)
+        clouds.coverage = 0.3
+        clouds.localWeatherVelocity.set(0.001, 0)
+        clouds.shadow.farScale = 0.25
+        clouds.shadow.maxFar = 1e5
+        clouds.shadow.cascadeCount = 2
+        clouds.shadow.mapSize.set(512, 512)
+        clouds.shadow.splitMode = 'practical'
+        clouds.shadow.splitLambda = 0.71
+
+        // Add event listener with proper type
+        clouds.events.addEventListener('change', event => {
+          if (event.property !== undefined) {
+            onCloudsChange(event.property)
+          }
+        })
+
+        // Load precomputed textures.
+        // const basePath = import.meta.env.BASE_URL || '/'
+        const basePath = '../packages/'
+        // new PrecomputedTexturesLoader()
+        //   .setTypeFromRenderer(renderer)
+        //   .load(basePath + 'atmosphere/assets', onPrecomputedTexturesLoad)
+
+        // Load textures for the clouds.
+        new TextureLoader().load(
+          basePath + 'clouds/assets/local_weather.png',
+          onLocalWeatherLoad
+        )
+        new DataTextureLoader(Data3DTexture, parseUint8Array, {
+          width: CLOUD_SHAPE_TEXTURE_SIZE,
+          height: CLOUD_SHAPE_TEXTURE_SIZE,
+          depth: CLOUD_SHAPE_TEXTURE_SIZE
+        }).load(basePath + 'clouds/assets/shape.bin', onShapeLoad)
+        new DataTextureLoader(Data3DTexture, parseUint8Array, {
+          width: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+          height: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+          depth: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE
+        }).load(basePath + 'clouds/assets/shape_detail.bin', onShapeDetailLoad)
+        new TextureLoader().load(
+          basePath + 'clouds/assets/turbulence.png',
+          onTurbulenceLoad
+        )
+        new STBNLoader().load(basePath + 'core/assets/stbn.bin', onSTBNLoad)
+
+        // --------------------------------
+        //  Color Grading is not working
+        // --------------------------------
+        // Load the LUT texture for color grading
+        const textureLoader = new TextureLoader()
+        // You can change the LUT file path to any of your available LUTs
+        // const lutPath = basePath + 'assets/clut/Fuji/Fuji 160C 1 -.png'
+        const lutPath =  '../storybook/assets/clut/Fuji/Fuji 160C 1 -.png'
+        textureLoader.load(lutPath, texture => {
+          lutTexture = createHaldLookupTexture(texture)
+          lutEffect = new LUT3DEffect(lutTexture)
+          if (composer) {
+            // composer.addPass(new EffectPass(camera, lutEffect));
+          }
+        })
+
+        // Use floating-point render buffer, as radiance/luminance is stored here.
+        composer = new EffectComposer(renderer, {
+          frameBufferType: HalfFloatType,
+          multisampling: 8
+        })
+        const normalPass = new NormalPass(scene, camera)
+        aerialPerspective.normalBuffer = normalPass.texture
+
+        composer.addPass(new RenderPass(scene, camera))
+        composer.addPass(normalPass)
+        composer.addPass(new EffectPass(camera, clouds, aerialPerspective))
+        composer.addPass(new EffectPass(camera, new LensFlareEffect()))
+        composer.addPass(
+          new EffectPass(
+            camera,
+            new ToneMappingEffect({ mode: ToneMappingMode.AGX })
+          )
+        )
+        composer.addPass(new EffectPass(camera, new SMAAEffect()))
+        composer.addPass(new EffectPass(camera, new DitheringEffect()))
+
+        window.addEventListener('resize', onWindowResize)
+      }
+
+      // Use a simpler approach with just the property name
+      function onCloudsChange(property) {
+        switch (property) {
+          case 'atmosphereOverlay':
+            aerialPerspective.overlay = clouds.atmosphereOverlay
+            break
+          case 'atmosphereShadow':
+            aerialPerspective.shadow = clouds.atmosphereShadow
+            break
+          case 'atmosphereShadowLength':
+            aerialPerspective.shadowLength = clouds.atmosphereShadowLength
+            break
+        }
+      }
+
+      function onLocalWeatherLoad(texture) {
+        texture.minFilter = LinearMipMapLinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.localWeatherTexture = texture
+      }
+
+      function onShapeLoad(texture) {
+        texture.format = RedFormat
+        texture.minFilter = LinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.wrapR = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.shapeTexture = texture
+      }
+
+      function onShapeDetailLoad(texture) {
+        texture.format = RedFormat
+        texture.minFilter = LinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.wrapR = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.shapeDetailTexture = texture
+      }
+
+      function onTurbulenceLoad(texture) {
+        texture.minFilter = LinearMipMapLinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.turbulenceTexture = texture
+      }
+
+      function onSTBNLoad(texture) {
+        aerialPerspective.stbnTexture = texture
+        clouds.stbnTexture = texture
+      }
+
+      function onPrecomputedTexturesLoad(textures) {
+        Object.assign(skyMaterial, textures)
+        Object.assign(aerialPerspective, textures)
+        Object.assign(clouds, textures)
+
+        renderer.setAnimationLoop(render)
+      }
+
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight
+        camera.updateProjectionMatrix()
+        renderer.setSize(window.innerWidth, window.innerHeight)
+      }
+
+      function render() {
+        const date = referenceDate
+        // getECIToECEFRotationMatrix(date, rotationMatrix)
+        // getSunDirectionECI(date, sunDirection).applyMatrix4(rotationMatrix)
+        // getMoonDirectionECI(date, moonDirection).applyMatrix4(rotationMatrix)
+
+        skyMaterial.sunDirection.copy(sunDirection)
+        skyMaterial.moonDirection.copy(moonDirection)
+
+        aerialPerspective.sunDirection.copy(sunDirection)
+        aerialPerspective.moonDirection.copy(moonDirection)
+
+        clouds.sunDirection.copy(sunDirection)
+
+        // globe.update()
+
+        // Update effect materials with current camera settings
+        if (composer) {
+          composer.passes.forEach(pass => {
+            if (pass.fullscreenMaterial instanceof EffectMaterial) {
+              pass.fullscreenMaterial.adoptCameraSettings(camera)
+            }
+          })
+          composer.render()
+        }
+      }
+
+      window.addEventListener('load', init)
+    </script>
+  </body>
+</html>

@@ -1,0 +1,414 @@
+<!doctype html>
+<html>
+  <head>
+    <title>Three.js Volumetric Clouds</title>
+    <style>
+      body {
+        margin: 0;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+      }
+      #info {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        color: white;
+        font-family: Arial, sans-serif;
+        font-size: 14px;
+        background: rgba(0, 0, 0, 0.5);
+        padding: 10px;
+        border-radius: 5px;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="info">
+      鼠标拖拽: 旋转视角<br />
+      滚轮: 缩放<br />
+      WSAD: 移动相机
+    </div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.181.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.181.0/examples/jsm/",
+          "postprocessing": "https://unpkg.com/postprocessing@6.37.3/build/index.js",
+          "@takram/three-geospatial": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/index.js",
+          "@takram/three-geospatial/shaders": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/shaders.js",
+          "@takram/three-geospatial-effects": "https://unpkg.com/@takram/three-geospatial-effects@0.4.3/build/index.js",
+          "@takram/three-atmosphere": "https://unpkg.com/@takram/three-atmosphere@0.15.1/build/index.js",
+          "@takram/three-clouds": "https://unpkg.com/@takram/three-clouds@0.6.0/build/index.js"
+        }
+      }
+    </script>
+    <script type="module">
+      import { Sky } from 'https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/objects/Sky.js'
+      import * as THREE from 'three'
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+
+      // 初始化场景
+      const scene = new THREE.Scene()
+      scene.fog = new THREE.Fog(0x87ceeb, 100, 2000)
+
+      const camera = new THREE.PerspectiveCamera(
+        75,
+        window.innerWidth / window.innerHeight,
+        0.1,
+        10000
+      )
+      camera.position.set(0, 100, 500)
+
+      const renderer = new THREE.WebGLRenderer({
+        antialias: true,
+        alpha: true
+      })
+      renderer.setSize(window.innerWidth, window.innerHeight)
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+      renderer.shadowMap.enabled = true
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap
+      document.body.appendChild(renderer.domElement)
+
+      // 轨道控制器
+      const controls = new OrbitControls(camera, renderer.domElement)
+      controls.enableDamping = true
+      controls.dampingFactor = 0.05
+      controls.minDistance = 50
+      controls.maxDistance = 2000
+
+      // WASD 控制器
+      const keys = {}
+      window.addEventListener(
+        'keydown',
+        e => (keys[e.key.toLowerCase()] = true)
+      )
+      window.addEventListener('keyup', e => (keys[e.key.toLowerCase()] = false))
+
+      // 创建地球
+      createEarth()
+
+      // 创建天空
+      createSky()
+
+      // 创建体积云
+      const clouds = createVolumetricClouds()
+      scene.add(clouds)
+
+      // 创建地面
+      createTerrain()
+
+      // 添加光照
+      const sunLight = createSunLight()
+
+      // 动画循环
+      const clock = new THREE.Clock()
+
+      function animate() {
+        requestAnimationFrame(animate)
+
+        const delta = clock.getDelta()
+        const time = clock.getElapsedTime()
+
+        // 更新云层动画
+        updateCloudsAnimation(clouds, time)
+
+        // 相机移动控制
+        updateCameraMovement(delta)
+
+        // 更新控制器
+        controls.update()
+
+        renderer.render(scene, camera)
+      }
+
+      animate()
+
+      // 窗口大小调整
+      window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight
+        camera.updateProjectionMatrix()
+        renderer.setSize(window.innerWidth, window.innerHeight)
+      })
+
+      // ========== 具体实现函数 ==========
+
+      function createEarth() {
+        const geometry = new THREE.SphereGeometry(100, 64, 64)
+        const textureLoader = new THREE.TextureLoader()
+        const material = new THREE.MeshStandardMaterial({
+          color: 0x1a5fb4,
+          roughness: 0.8,
+          metalness: 0.2
+        })
+        const earth = new THREE.Mesh(geometry, material)
+        scene.add(earth)
+      }
+
+      function createSky() {
+        const sky = new Sky()
+        sky.scale.setScalar(10000)
+        scene.add(sky)
+
+        const skyUniforms = sky.material.uniforms
+        skyUniforms['turbidity'].value = 10
+        skyUniforms['rayleigh'].value = 2
+        skyUniforms['mieCoefficient'].value = 0.005
+        skyUniforms['mieDirectionalG'].value = 0.8
+
+        // 太阳位置
+        const sun = new THREE.Vector3()
+        const phi = THREE.MathUtils.degToRad(90 - 45)
+        const theta = THREE.MathUtils.degToRad(180)
+        sun.setFromSphericalCoords(1, phi, theta)
+
+        skyUniforms['sunPosition'].value.copy(sun)
+      }
+
+      function createSunLight() {
+        // 环境光
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3)
+        scene.add(ambientLight)
+
+        // 直射光（太阳）
+        const sunLight = new THREE.DirectionalLight(0xffffff, 1.5)
+        sunLight.position.set(500, 500, 300)
+        sunLight.castShadow = true
+        sunLight.shadow.mapSize.width = 2048
+        sunLight.shadow.mapSize.height = 2048
+        sunLight.shadow.camera.near = 0.5
+        sunLight.shadow.camera.far = 1000
+        sunLight.shadow.camera.left = -200
+        sunLight.shadow.camera.right = 200
+        sunLight.shadow.camera.top = 200
+        sunLight.shadow.camera.bottom = -200
+        scene.add(sunLight)
+
+        // 辅助可视化太阳光方向
+        const lightHelper = new THREE.DirectionalLightHelper(sunLight, 10)
+        scene.add(lightHelper)
+
+        return sunLight
+      }
+
+      function createVolumetricClouds() {
+        const cloudGroup = new THREE.Group()
+
+        // 创建不同高度的云层
+        const cloudHeights = [120, 150, 180, 210]
+        const cloudSizes = [300, 400, 500, 600]
+        const cloudCounts = [8, 6, 4, 3]
+
+        // 创建噪声纹理用于云朵
+        const cloudTexture = createProceduralCloudTexture(512)
+
+        for (let layer = 0; layer < cloudHeights.length; layer++) {
+          for (let i = 0; i < cloudCounts[layer]; i++) {
+            const cloud = createSingleCloud(
+              cloudHeights[layer],
+              cloudSizes[layer],
+              cloudTexture
+            )
+            cloudGroup.add(cloud)
+          }
+        }
+
+        return cloudGroup
+      }
+
+      function createSingleCloud(height, size, texture) {
+        // 使用多个球体组合成云朵
+        const cloudGroup = new THREE.Group()
+
+        const cloudMaterial = new THREE.MeshLambertMaterial({
+          map: texture,
+          color: 0xffffff,
+          transparent: true,
+          opacity: 0.6,
+          depthWrite: false,
+          side: THREE.DoubleSide
+        })
+
+        // 创建云朵的多个部分
+        const partCount = 5 + Math.floor(Math.random() * 8)
+        for (let i = 0; i < partCount; i++) {
+          // 随机大小和位置
+          const partSize = size * (0.3 + Math.random() * 0.5)
+          const partGeometry = new THREE.SphereGeometry(
+            partSize,
+            16 + Math.floor(Math.random() * 8),
+            12 + Math.floor(Math.random() * 6)
+          )
+
+          const cloudPart = new THREE.Mesh(partGeometry, cloudMaterial)
+
+          // 随机位置（在云朵范围内）
+          cloudPart.position.set(
+            (Math.random() - 0.5) * size * 0.8,
+            (Math.random() - 0.5) * size * 0.3,
+            (Math.random() - 0.5) * size * 0.8
+          )
+
+          // 随机旋转
+          cloudPart.rotation.set(
+            Math.random() * Math.PI,
+            Math.random() * Math.PI,
+            Math.random() * Math.PI
+          )
+
+          // 随机缩放
+          const scale = 0.5 + Math.random() * 0.7
+          cloudPart.scale.set(scale, scale * 0.6, scale)
+
+          cloudGroup.add(cloudPart)
+        }
+
+        // 随机云朵位置
+        cloudGroup.position.set(
+          (Math.random() - 0.5) * 800,
+          height,
+          (Math.random() - 0.5) * 800
+        )
+
+        return cloudGroup
+      }
+
+      function createProceduralCloudTexture(size) {
+        const canvas = document.createElement('canvas')
+        canvas.width = size
+        canvas.height = size
+        const ctx = canvas.getContext('2d')
+
+        // 创建渐变背景
+        const gradient = ctx.createRadialGradient(
+          size / 2,
+          size / 2,
+          0,
+          size / 2,
+          size / 2,
+          size / 2
+        )
+        gradient.addColorStop(0, 'rgba(255,255,255,0.9)')
+        gradient.addColorStop(0.3, 'rgba(255,255,255,0.7)')
+        gradient.addColorStop(0.6, 'rgba(255,255,255,0.4)')
+        gradient.addColorStop(1, 'rgba(255,255,255,0.1)')
+
+        ctx.fillStyle = gradient
+        ctx.fillRect(0, 0, size, size)
+
+        // 添加噪声
+        for (let i = 0; i < 5000; i++) {
+          const x = Math.random() * size
+          const y = Math.random() * size
+          const alpha = 0.05 + Math.random() * 0.1
+
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`
+          ctx.fillRect(x, y, 2, 2)
+        }
+
+        // 创建云状图案
+        for (let i = 0; i < 30; i++) {
+          const centerX = Math.random() * size
+          const centerY = Math.random() * size
+          const radius = 10 + Math.random() * 40
+
+          ctx.beginPath()
+          for (let angle = 0; angle < Math.PI * 2; angle += 0.1) {
+            const noise = 0.7 + Math.random() * 0.3
+            const x = centerX + Math.cos(angle) * radius * noise
+            const y = centerY + Math.sin(angle) * radius * noise
+
+            if (angle === 0) {
+              ctx.moveTo(x, y)
+            } else {
+              ctx.lineTo(x, y)
+            }
+          }
+          ctx.closePath()
+
+          const alpha = 0.2 + Math.random() * 0.3
+          ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`
+          ctx.fill()
+        }
+
+        const texture = new THREE.CanvasTexture(canvas)
+        texture.wrapS = THREE.RepeatWrapping
+        texture.wrapT = THREE.RepeatWrapping
+        return texture
+      }
+
+      function createTerrain() {
+        const geometry = new THREE.PlaneGeometry(2000, 2000, 50, 50)
+
+        // 添加一些高度变化
+        const vertices = geometry.attributes.position.array
+        for (let i = 0; i < vertices.length; i += 3) {
+          const x = vertices[i]
+          const z = vertices[i + 2]
+          vertices[i + 1] = Math.sin(x * 0.01) * 10 + Math.cos(z * 0.01) * 10
+        }
+        geometry.computeVertexNormals()
+
+        const material = new THREE.MeshStandardMaterial({
+          color: 0x3a7c3a,
+          roughness: 0.8,
+          metalness: 0.1
+        })
+
+        const terrain = new THREE.Mesh(geometry, material)
+        terrain.rotation.x = -Math.PI / 2
+        terrain.position.y = -50
+        terrain.receiveShadow = true
+        scene.add(terrain)
+      }
+
+      function updateCloudsAnimation(clouds, time) {
+        clouds.children.forEach((cloud, index) => {
+          // 缓慢旋转
+          cloud.rotation.y += 0.001 * (1 + index * 0.1)
+
+          // 轻微上下浮动
+          const floatSpeed = 0.2 + index * 0.05
+          const floatAmount = 5
+          cloud.position.y += Math.sin(time * floatSpeed) * 0.01
+
+          // 水平飘移
+          const driftSpeed = 0.1 + index * 0.03
+          cloud.position.x += Math.sin(time * driftSpeed) * 0.02
+          cloud.position.z += Math.cos(time * driftSpeed * 0.7) * 0.02
+        })
+      }
+
+      function updateCameraMovement(delta) {
+        const speed = 200 * delta
+
+        if (keys['w']) {
+          camera.position.x -= Math.sin(camera.rotation.y) * speed
+          camera.position.z -= Math.cos(camera.rotation.y) * speed
+        }
+        if (keys['s']) {
+          camera.position.x += Math.sin(camera.rotation.y) * speed
+          camera.position.z += Math.cos(camera.rotation.y) * speed
+        }
+        if (keys['a']) {
+          camera.position.x -= Math.cos(camera.rotation.y) * speed
+          camera.position.z += Math.sin(camera.rotation.y) * speed
+        }
+        if (keys['d']) {
+          camera.position.x += Math.cos(camera.rotation.y) * speed
+          camera.position.z -= Math.sin(camera.rotation.y) * speed
+        }
+        if (keys[' ']) {
+          // 空格键上升
+          camera.position.y += speed
+        }
+        if (keys['shift']) {
+          // Shift键下降
+          camera.position.y -= speed
+        }
+      }
+
+      console.log('Three.js 体积云场景已加载！使用 WASD 和鼠标进行导航。')
+    </script>
+  </body>
+</html>

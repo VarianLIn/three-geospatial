@@ -1,0 +1,301 @@
+<!--
+ * @Author: Varian LIn
+ * @Date: 2026-01-29 11:29:03
+ * @LastEditors: Varian LIn
+ * @LastEditTime: 2026-02-03 11:08:27
+ * @Description: 
+-->
+<!doctype html>
+<html lang="zh-cn">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="container"></div>
+    <script type="importmap">
+      {
+        "imports": {
+          "three": "https://unpkg.com/three@0.181.0/build/three.module.js",
+          "three/addons/": "https://unpkg.com/three@0.181.0/examples/jsm/",
+          "postprocessing": "https://unpkg.com/postprocessing@6.37.3/build/index.js",
+          "@takram/three-geospatial": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/index.js",
+          "@takram/three-geospatial/shaders": "https://unpkg.com/@takram/three-geospatial@0.5.1/build/shaders.js",
+          "@takram/three-geospatial-effects": "https://unpkg.com/@takram/three-geospatial-effects@0.4.3/build/index.js",
+          "@takram/three-atmosphere": "https://unpkg.com/@takram/three-atmosphere@0.15.1/build/index.js",
+          "@takram/three-clouds": "https://cdn.jsdelivr.net/npm/@takram/three-clouds@0.6.0/+esm"
+        }
+      }
+    </script>
+    <!-- "@takram/three-clouds": "../packages/clouds/src/index.ts" -->
+
+    <script type="module">
+      // 移植 Clouds-Vanilla.tsx
+      import {
+        EffectComposer,
+        EffectPass,
+        NormalPass,
+        RenderPass,
+        ToneMappingEffect,
+        ToneMappingMode
+      } from 'postprocessing'
+      import {
+        Data3DTexture,
+        Group,
+        HalfFloatType,
+        LinearFilter,
+        LinearMipMapLinearFilter,
+        Mesh,
+        MeshBasicMaterial,
+        NoColorSpace,
+        NoToneMapping,
+        PerspectiveCamera,
+        RedFormat,
+        RepeatWrapping,
+        Scene,
+        TextureLoader,
+        TorusKnotGeometry,
+        Vector3,
+        WebGLRenderer
+        // type Texture
+      } from 'three'
+      import { OrbitControls } from 'three/addons/controls/OrbitControls.js'
+
+      import {
+        AerialPerspectiveEffect,
+        getSunDirectionECEF,
+        PrecomputedTexturesLoader
+      } from '@takram/three-atmosphere'
+      import {
+        CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+        CLOUD_SHAPE_TEXTURE_SIZE,
+        CloudsEffect
+        // type CloudsEffectChangeEvent
+      } from '@takram/three-clouds'
+      import {
+        DataTextureLoader,
+        Ellipsoid,
+        Geodetic,
+        parseUint8Array,
+        radians,
+        STBNLoader
+      } from '@takram/three-geospatial'
+      import {
+        DitheringEffect,
+        LensFlareEffect
+      } from '@takram/three-geospatial-effects'
+
+      let renderer //: WebGLRenderer
+      let camera //: PerspectiveCamera
+      let controls //: OrbitControls
+      let scene //: Scene
+      let aerialPerspective //: AerialPerspectiveEffect
+      let clouds //: CloudsEffect
+      let composer //: EffectComposer
+
+      const date = new Date('2000-06-01T10:00:00Z')
+      const geodetic = new Geodetic(0, radians(67), 500)
+      const position = geodetic.toECEF()
+      const up = Ellipsoid.WGS84.getSurfaceNormal(position)
+
+      // function init(container: HTMLDivElement): void {
+      function init(container) {
+        const aspect = window.innerWidth / window.innerHeight
+        camera = new PerspectiveCamera(75, aspect, 10, 1e6)
+        camera.position.copy(position)
+        camera.up.copy(up)
+
+        controls = new OrbitControls(camera, container)
+        controls.enableDamping = true
+        controls.minDistance = 1e3
+        controls.target.copy(position)
+
+        scene = new Scene()
+
+        const group = new Group()
+        Ellipsoid.WGS84.getEastNorthUpFrame(position).decompose(
+          group.position,
+          group.quaternion,
+          group.scale
+        )
+        scene.add(group)
+
+        const torusKnotGeometry = new TorusKnotGeometry(200, 60, 256, 64)
+        torusKnotGeometry.computeVertexNormals()
+        const torusKnot = new Mesh(
+          torusKnotGeometry,
+          new MeshBasicMaterial({ color: 'white' })
+        )
+        group.add(torusKnot)
+
+        // Demonstrates post-process lighting here.
+        aerialPerspective = new AerialPerspectiveEffect(camera)
+        aerialPerspective.sky = true
+        aerialPerspective.sunLight = true
+        aerialPerspective.skyLight = true
+
+        // For the lighting in AerialPerspectiveEffect to work, we must provide a
+        // normal buffer. Alternatively, this can be sourced from the MRT output.
+        const normalPass = new NormalPass(scene, camera)
+        aerialPerspective.normalBuffer = normalPass.texture
+
+        clouds = new CloudsEffect(camera)
+        clouds.coverage = 0.4
+        clouds.localWeatherVelocity.set(0.001, 0)
+        clouds.events.addEventListener('change', onCloudsChange)
+
+        // Define the direction to the sun.
+        const sunDirection = new Vector3()
+        getSunDirectionECEF(date, sunDirection)
+        aerialPerspective.sunDirection.copy(sunDirection)
+        clouds.sunDirection.copy(sunDirection)
+
+        renderer = new WebGLRenderer({
+          depth: false,
+          logarithmicDepthBuffer: false
+        })
+        renderer.setPixelRatio(window.devicePixelRatio)
+        renderer.setSize(window.innerWidth, window.innerHeight)
+        renderer.toneMapping = NoToneMapping
+        renderer.toneMappingExposure = 10
+
+        // Use floating-point render buffer, as radiance/luminance is stored here.
+        composer = new EffectComposer(renderer, {
+          frameBufferType: HalfFloatType,
+          multisampling: 0
+        })
+        composer.addPass(new RenderPass(scene, camera))
+        composer.addPass(normalPass)
+        composer.addPass(new EffectPass(camera, clouds, aerialPerspective))
+        composer.addPass(
+          new EffectPass(
+            camera,
+            new LensFlareEffect(),
+            new ToneMappingEffect({ mode: ToneMappingMode.AGX }),
+            new DitheringEffect()
+          )
+        )
+
+        // Load precomputed textures.
+        const textures = new PrecomputedTexturesLoader()
+          .setType(renderer)
+          .load('atmosphere')
+        Object.assign(aerialPerspective, textures)
+        Object.assign(clouds, textures)
+
+        // Load textures for the clouds.
+        new TextureLoader().load('clouds/local_weather.png', onLocalWeatherLoad)
+        new DataTextureLoader(Data3DTexture, parseUint8Array, {
+          width: CLOUD_SHAPE_TEXTURE_SIZE,
+          height: CLOUD_SHAPE_TEXTURE_SIZE,
+          depth: CLOUD_SHAPE_TEXTURE_SIZE
+        }).load('clouds/shape.bin', onShapeLoad)
+        // new DataTextureLoader(Data3DTexture, parseUint8Array, {
+        //   width: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+        //   height: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+        //   depth: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE
+        // }).load('clouds/shape_detail.bin', onShapeDetailLoad)
+        new TextureLoader().load('clouds/turbulence.png', onTurbulenceLoad)
+        new STBNLoader().load('core/stbn.bin', onSTBNLoad)
+
+        setTimeout(() => {
+          container.appendChild(renderer.domElement)
+          window.addEventListener('resize', onWindowResize)
+          renderer.setAnimationLoop(render)
+        }, 5000)
+      }
+
+      // function onCloudsChange(event: CloudsEffectChangeEvent): void {
+      function onCloudsChange(event) {
+        switch (event.property) {
+          case 'atmosphereOverlay':
+            aerialPerspective.overlay = clouds.atmosphereOverlay
+            break
+          case 'atmosphereShadow':
+            aerialPerspective.shadow = clouds.atmosphereShadow
+            break
+          case 'atmosphereShadowLength':
+            aerialPerspective.shadowLength = clouds.atmosphereShadowLength
+            break
+          default:
+        }
+      }
+
+      // function onLocalWeatherLoad(texture: Texture): void {
+      function onLocalWeatherLoad(texture) {
+        texture.minFilter = LinearMipMapLinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.localWeatherTexture = texture
+      }
+
+      // function onShapeLoad(texture: Data3DTexture): void {
+      function onShapeLoad(texture) {
+        texture.format = RedFormat
+        texture.minFilter = LinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.wrapR = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.shapeTexture = texture
+      }
+
+      // function onShapeDetailLoad(texture: Data3DTexture): void {
+      function onShapeDetailLoad(texture) {
+        texture.format = RedFormat
+        texture.minFilter = LinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.wrapR = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.shapeDetailTexture = texture
+      }
+
+      // function onTurbulenceLoad(texture: Texture): void {
+      function onTurbulenceLoad(texture) {
+        texture.minFilter = LinearMipMapLinearFilter
+        texture.magFilter = LinearFilter
+        texture.wrapS = RepeatWrapping
+        texture.wrapT = RepeatWrapping
+        texture.colorSpace = NoColorSpace
+        texture.needsUpdate = true
+        clouds.turbulenceTexture = texture
+      }
+
+      // function onSTBNLoad(texture: Data3DTexture): void {
+      function onSTBNLoad(texture) {
+        aerialPerspective.stbnTexture = texture
+        clouds.stbnTexture = texture
+      }
+
+      // function onWindowResize(): void {
+      function onWindowResize() {
+        camera.aspect = window.innerWidth / window.innerHeight
+        camera.updateProjectionMatrix()
+        renderer.setSize(window.innerWidth, window.innerHeight)
+      }
+
+      // function render(): void {
+      function render() {
+        controls.update()
+        composer.render()
+      }
+
+      const container = document.getElementById('container')
+      init(container)
+    </script>
+  </body>
+</html>
