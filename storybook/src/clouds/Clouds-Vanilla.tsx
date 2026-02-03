@@ -35,12 +35,6 @@ import {
   PrecomputedTexturesLoader
 } from '@takram/three-atmosphere'
 import {
-  CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
-  CLOUD_SHAPE_TEXTURE_SIZE,
-  CloudsEffect,
-  type CloudsEffectChangeEvent
-} from '@takram/three-clouds'
-import {
   DataTextureLoader,
   Ellipsoid,
   Geodetic,
@@ -52,6 +46,14 @@ import {
   DitheringEffect,
   LensFlareEffect
 } from '@takram/three-geospatial-effects'
+
+import {
+  CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+  CLOUD_SHAPE_TEXTURE_SIZE,
+  CloudsEffect,
+  type CloudsEffectChangeEvent
+  // } from '@takram/three-clouds'
+} from '../../../packages/clouds/src/index'
 
 let renderer: WebGLRenderer
 let camera: PerspectiveCamera
@@ -79,21 +81,23 @@ function init(container: HTMLDivElement): void {
 
   scene = new Scene()
 
-  const group = new Group()
-  Ellipsoid.WGS84.getEastNorthUpFrame(position).decompose(
-    group.position,
-    group.quaternion,
-    group.scale
-  )
-  scene.add(group)
+  {
+    const group = new Group()
+    Ellipsoid.WGS84.getEastNorthUpFrame(position).decompose(
+      group.position,
+      group.quaternion,
+      group.scale
+    )
+    scene.add(group)
 
-  const torusKnotGeometry = new TorusKnotGeometry(200, 60, 256, 64)
-  torusKnotGeometry.computeVertexNormals()
-  const torusKnot = new Mesh(
-    torusKnotGeometry,
-    new MeshBasicMaterial({ color: 'white' })
-  )
-  group.add(torusKnot)
+    const torusKnotGeometry = new TorusKnotGeometry(200, 60, 256, 64)
+    torusKnotGeometry.computeVertexNormals()
+    const torusKnot = new Mesh(
+      torusKnotGeometry,
+      new MeshBasicMaterial({ color: 'white' })
+    )
+    group.add(torusKnot)
+  }
 
   // Demonstrates post-process lighting here.
   aerialPerspective = new AerialPerspectiveEffect(camera)
@@ -143,27 +147,29 @@ function init(container: HTMLDivElement): void {
     )
   )
 
-  // Load precomputed textures.
-  const textures = new PrecomputedTexturesLoader()
-    .setType(renderer)
-    .load('atmosphere')
-  Object.assign(aerialPerspective, textures)
-  Object.assign(clouds, textures)
+  {
+    // Load precomputed textures.
+    const textures = new PrecomputedTexturesLoader()
+      .setType(renderer)
+      .load('atmosphere')
+    Object.assign(aerialPerspective, textures)
+    Object.assign(clouds, textures)
 
-  // Load textures for the clouds.
-  new TextureLoader().load('clouds/local_weather.png', onLocalWeatherLoad)
-  new DataTextureLoader(Data3DTexture, parseUint8Array, {
-    width: CLOUD_SHAPE_TEXTURE_SIZE,
-    height: CLOUD_SHAPE_TEXTURE_SIZE,
-    depth: CLOUD_SHAPE_TEXTURE_SIZE
-  }).load('clouds/shape.bin', onShapeLoad)
-  new DataTextureLoader(Data3DTexture, parseUint8Array, {
-    width: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
-    height: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
-    depth: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE
-  }).load('clouds/shape_detail.bin', onShapeDetailLoad)
-  new TextureLoader().load('clouds/turbulence.png', onTurbulenceLoad)
-  new STBNLoader().load('core/stbn.bin', onSTBNLoad)
+    // Load textures for the clouds.
+    // new TextureLoader().load('clouds/local_weather.png', onLocalWeatherLoad)
+    // new DataTextureLoader(Data3DTexture, parseUint8Array, {
+    //   width: CLOUD_SHAPE_TEXTURE_SIZE,
+    //   height: CLOUD_SHAPE_TEXTURE_SIZE,
+    //   depth: CLOUD_SHAPE_TEXTURE_SIZE
+    // }).load('clouds/shape.bin', onShapeLoad)
+    // new DataTextureLoader(Data3DTexture, parseUint8Array, {
+    //   width: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+    //   height: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE,
+    //   depth: CLOUD_SHAPE_DETAIL_TEXTURE_SIZE
+    // }).load('clouds/shape_detail.bin', onShapeDetailLoad)
+    // new TextureLoader().load('clouds/turbulence.png', onTurbulenceLoad)
+    // new STBNLoader().load('core/stbn.bin', onSTBNLoad)
+  }
 
   container.appendChild(renderer.domElement)
   window.addEventListener('resize', onWindowResize)
